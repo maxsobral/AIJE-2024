@@ -95,7 +95,22 @@ def has_api_key():
 
 
 def get_last_refresh():
-    return get_config().get("ultima_atualizacao")
+    """Data da última sincronização. Vem do config.json quando a atualização foi
+    feita por este servidor (rota /api/dados/atualizar); como esse arquivo não é
+    versionado (guarda também a chave da API), em produção ele não existe — nesse
+    caso cai para o campo "Atualizado em" que o próprio Metabase grava em cada
+    processo no momento da exportação."""
+    val = get_config().get("ultima_atualizacao")
+    if val:
+        return val
+    try:
+        dataset = carregar_dataset()
+    except RuntimeError:
+        return None
+    valores = {r.get("Atualizado em") for r in dataset if r.get("Atualizado em")}
+    if not valores:
+        return None
+    return max(valores).replace(" ", "T")
 
 
 def set_last_refresh(iso):
