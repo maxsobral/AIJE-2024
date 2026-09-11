@@ -194,6 +194,31 @@ def resumo_processo(r):
 
 # ---------- Agregações / listagens ----------
 
+def _data_mais_recente_registro(r):
+    """Maior data entre julgamento e última decisão do registro (strings ISO,
+    comparáveis lexicograficamente)."""
+    datas = [d for d in (r.get("Data julgamento"), r.get("Data ultima decisao ou julgamento")) if d]
+    return max(datas) if datas else None
+
+
+def obter_classes_disponiveis(dataset):
+    return sorted({(r.get("Classe") or "").strip().upper() for r in dataset if r.get("Classe")})
+
+
+def obter_ultima_decisao_indexada(dataset):
+    melhor, melhor_data = None, None
+    for r in dataset:
+        data_r = _data_mais_recente_registro(r)
+        if data_r and (melhor_data is None or data_r > melhor_data):
+            melhor, melhor_data = r, data_r
+    if not melhor:
+        return None
+    resumo = resumo_processo(melhor)
+    resumo["tipo"] = "merito" if melhor_data == melhor.get("Data julgamento") else "interlocutoria"
+    resumo["data"] = melhor_data
+    return resumo
+
+
 def obter_resumo_blocos(query=None):
     dataset = carregar_dataset()
     base = filtrar_dataset_por_query(dataset, query) if query else dataset
@@ -234,6 +259,8 @@ def obter_resumo_blocos(query=None):
         "totalFiltrado": len(base) if query else None,
         "filtroAtivo": bool(query),
         "ultimaAtualizacao": get_last_refresh(),
+        "classesDisponiveis": obter_classes_disponiveis(dataset),
+        "ultimaDecisaoIndexada": obter_ultima_decisao_indexada(dataset),
         "merito": {"total": len(merito), "categorias": categorias_merito, "resultados": resultados},
         "interlocutorias": {"total": len(interlocutorias), "categorias": categorias_interlocutorias},
     }

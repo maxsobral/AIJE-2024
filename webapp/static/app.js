@@ -122,15 +122,40 @@ function blocosHtml(resumo) {
   return html;
 }
 
+function tituloCaso(s) {
+  return (s || '').toLowerCase().replace(/(^|\s)\S/g, function (c) { return c.toUpperCase(); });
+}
+
+function renderInfoRepositorio(resumo) {
+  var classes = (resumo.classesDisponiveis || []).map(tituloCaso).map(escapeHtml).join(', ');
+
+  var ultima = resumo.ultimaDecisaoIndexada;
+  var ultimaHtml = 'não disponível';
+  if (ultima) {
+    var tipo = ultima.tipo === 'merito' ? 'merito' : 'interlocutoria';
+    var tipoLabel = ultima.tipo === 'merito' ? 'Mérito' : 'Interlocutória';
+    ultimaHtml = '<a href="#/decisao/' + encodeURIComponent(ultima.id) + '/' + tipo + '">' +
+      escapeHtml(ultima.processo || String(ultima.id)) + '</a>' +
+      ' (' + tipoLabel + ')' +
+      (ultima.municipio ? ' · ' + escapeHtml(ultima.municipio) : '') +
+      (ultima.data ? ' · ' + escapeHtml(ultima.data) : '');
+  }
+
+  return '<p class="subtitle">Classes disponíveis: ' + (classes || 'não disponível') + '</p>' +
+    '<p class="subtitle">Última atualização: ' +
+    (resumo.ultimaAtualizacao ? formatarData(resumo.ultimaAtualizacao) : 'dados ainda não sincronizados (veja Configurações)') +
+    '</p>' +
+    '<p class="subtitle">Última decisão indexada: ' + ultimaHtml + '</p>';
+}
+
 async function renderInicio() {
   setApp('<div class="loading">Carregando resumo…</div>');
   try {
     var resumo = await api.resumo();
     var html = '';
-    html += '<h1>Decisões de AIJE — TRE-SC</h1>';
-    html += '<p class="subtitle">' + resumo.totalProcessos + ' processo(s) na base' +
-      (resumo.ultimaAtualizacao ? ' · atualizado em ' + formatarData(resumo.ultimaAtualizacao) : ' · dados ainda não sincronizados (veja Configurações)') +
-      '</p>';
+    html += '<h1>Repositório de decisões 1G - TRE-SC</h1>';
+    html += '<p class="subtitle">' + resumo.totalProcessos + ' processo(s) na base</p>';
+    html += renderInfoRepositorio(resumo);
 
     html += '<section class="card">' +
       '<form id="form-busca" class="form-inline">' +
