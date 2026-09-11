@@ -62,7 +62,11 @@ function erroHtml(err) {
 }
 
 function formatarData(iso) {
-  try { return new Date(iso).toLocaleString('pt-BR'); } catch (e) { return iso; }
+  if (!iso) return '';
+  var m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(iso);
+  if (!m) return iso;
+  var data = m[3] + '-' + m[2] + '-' + m[1];
+  return m[4] ? data + ' ' + m[4] + ':' + m[5] : data;
 }
 
 var CAMPO_ROTULOS = {
@@ -138,7 +142,7 @@ function renderInfoRepositorio(resumo) {
       escapeHtml(ultima.processo || String(ultima.id)) + '</a>' +
       ' (' + tipoLabel + ')' +
       (ultima.municipio ? ' · ' + escapeHtml(ultima.municipio) : '') +
-      (ultima.data ? ' · ' + escapeHtml(ultima.data) : '');
+      (ultima.data ? ' · ' + escapeHtml(formatarData(ultima.data)) : '');
   }
 
   return '<p class="subtitle">Classes disponíveis: ' + (classes || 'não disponível') + '</p>' +
@@ -348,7 +352,8 @@ function renderizarTabelaListagem() {
 
   var linhas = itens.map(function (it) {
     var celulas = colunas.map(function (c) {
-      return '<td>' + escapeHtml(c.get(it) || '—') + '</td>';
+      var valor = c.get(it);
+      return '<td>' + escapeHtml((c.key === 'data' ? formatarData(valor) : valor) || '—') + '</td>';
     }).join('');
     var linkTeor = '<td><a href="#/decisao/' + encodeURIComponent(it.id) + '/' + tipo + '">Ver inteiro teor →</a></td>';
     return '<tr>' + celulas + linkTeor + '</tr>';
@@ -383,7 +388,8 @@ async function renderDecisao(id, tipo) {
       metaItem('Município', r.municipio) + metaItem('Zona Eleitoral', r.zonaEleitoral) +
       metaItem('Autor', r.autor) + metaItem('Cargo', r.cargo) +
       metaItem('Eleição', r.eleicao) + metaItem('Resultado', r.resultado) +
-      metaItem('Data julgamento', r.dataJulgamento) + metaItem('Última decisão', r.dataUltimaDecisao) +
+      metaItem('Data julgamento', r.dataJulgamento && formatarData(r.dataJulgamento)) +
+      metaItem('Última decisão', r.dataUltimaDecisao && formatarData(r.dataUltimaDecisao)) +
       '</div>';
     html += '<div class="decisao-box">' + (dados.html || '<p class="muted">Sem conteúdo disponível.</p>') + '</div>';
     setApp(html);
