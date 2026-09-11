@@ -1,0 +1,417 @@
+<script>
+  // ---------- Helpers gerais ----------
+
+  function gs(fnName) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (resolve, reject) {
+      var runner = google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(function (err) { reject(err); });
+      runner[fnName].apply(runner, args);
+    });
+  }
+
+  function setApp(html) {
+    document.getElementById('app').innerHTML = html;
+  }
+
+  function escapeHtml(s) {
+    if (s === null || s === undefined) return '';
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function erroHtml(err) {
+    var msg = (err && err.message) ? err.message : String(err);
+    return '<div class="erro">Erro: ' + escapeHtml(msg) + '</div>';
+  }
+
+  function formatarData(iso) {
+    try { return new Date(iso).toLocaleString('pt-BR'); } catch (e) { return iso; }
+  }
+
+  function fileToBase64(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(reader.result.split(',')[1]); };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function fileToText(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(reader.result); };
+      reader.onerror = reject;
+      reader.readAsText(file, 'UTF-8');
+    });
+  }
+
+  // Envia o JSON exportado do Metabase em pedaços, para não estourar o
+  // limite de payload de uma única chamada de google.script.run (o arquivo
+  // pode ter ~14MB).
+  var TAMANHO_PEDACO_IMPORTACAO = 500000;
+
+  async function importarArquivoDados(file, msgEl) {
+    msgEl.textContent = 'Lendo arquivo…';
+    var texto = await fileToText(file);
+    var totalPedacos = Math.max(1, Math.ceil(texto.length / TAMANHO_PEDACO_IMPORTACAO));
+
+    await gs('iniciarImportacao');
+    for (var i = 0; i < totalPedacos; i++) {
+      msgEl.textContent = 'Enviando parte ' + (i + 1) + ' de ' + totalPedacos + '…';
+      var pedaco = texto.slice(i * TAMANHO_PEDACO_IMPORTACAO, (i + 1) * TAMANHO_PEDACO_IMPORTACAO);
+      await gs('enviarPedacoImportacao', pedaco);
+    }
+    msgEl.textContent = 'Finalizando…';
+    var res = await gs('finalizarImportacao');
+    msgEl.innerHTML = '<span class="ok">' + res.totalProcessos + ' processo(s) importado(s).</span>';
+  }
+
+  var CAMPO_ROTULOS = {
+    'Abuso poder economico': 'Abuso de poder econômico',
+    'Abuso poder politico': 'Abuso de poder político',
+    'Captacao ilicita sufragio': 'Captação ilícita de sufrágio',
+    'Captacao/gasto ilicito (30-A)': 'Captação/gasto ilícito (art. 30-A)',
+    'Conduta vedada': 'Conduta vedada',
+    'Fraude cota de genero': 'Fraude a cota de gênero',
+    'Uso indevido meios comunicacao': 'Uso indevido de meios de comunicação'
+  };
+  function campoRotulo(campo) { return CAMPO_ROTULOS[campo] || campo; }
+
+  // ---------- Roteamento (hash-based) ----------
+
+  function parseHash() {
+    var h = location.hash.replace(/^#\/?/, '');
+    if (!h) return [];
+    return h.split('/').map(decodeURIComponent);
+  }
+
+  function router() {
+    var partes = parseHash();
+    if (!partes.length || partes[0] === 'inicio') return renderInicio();
+    if (partes[0] === 'lista') return renderLista(partes[1], partes[2], partes[3]);
+    if (partes[0] === 'decisao') return renderDecisao(partes[1], partes[2]);
+    if (partes[0] === 'busca') return renderBusca();
+    if (partes[0] === 'similaridade') return renderSimilaridade();
+    if (partes[0] === 'config') return renderConfig();
+    return renderInicio();
+  }
+
+  window.addEventListener('hashchange', router);
+  window.addEventListener('DOMContentLoaded', router);
+
+  // ---------- Tela: Início ----------
+
+  async function renderInicio() {
+    setApp('<div class="loading">Carregando resumo…</div>');
+    try {
+      var resumo = await gs('obterResumoBlocos');
+      var html = '';
+      html += '<h1>Decisões de AIJE — TRE-SC</h1>';
+      html += '<p class="subtitle">' + resumo.totalProcessos + ' processo(s) na base' +
+        (resumo.ultimaAtualizacao ? ' · atualizado em ' + formatarData(resumo.ultimaAtualizacao) : ' · dados ainda não sincronizados (veja Configurações)') +
+        '</p>';
+      html += '<div class="blocos">';
+      html += blocoCard(
+        'interlocutorias',
+        'Decisões Interlocutórias',
+        resumo.interlocutorias.total,
+        resumo.interlocutorias.categorias.map(function (c) {
+          return { rotulo: c.rotulo, count: c.count, campo: null, valor: c.rotulo };
+        })
+      );
+      html += blocoCard(
+        'merito',
+        'Decisões de Mérito',
+        resumo.merito.total,
+        resumo.merito.categorias.map(function (c) {
+          return { rotulo: c.rotulo, count: c.count, campo: c.campo, valor: null };
+        }),
+        resumo.merito.resultados
+      );
+      html += '</div>';
+      setApp(html);
+    } catch (err) {
+      setApp(erroHtml(err));
+    }
+  }
+
+  function blocoCard(bloco, titulo, total, categorias, resultados) {
+    var chips = categorias.map(function (c) {
+      var href = '#/lista/' + bloco + '/' + encodeURIComponent(c.campo || '') + '/' + encodeURIComponent(c.valor || '');
+      return '<a class="chip" href="' + href + '">' + escapeHtml(c.rotulo) + ' <span class="chip-count">' + c.count + '</span></a>';
+    }).join('');
+
+    var resultadosHtml = '';
+    if (resultados && resultados.length) {
+      resultadosHtml = '<div class="resultados-mini">' + resultados.map(function (r) {
+        return '<span class="badge">' + escapeHtml(r.rotulo) + ': ' + r.count + '</span>';
+      }).join('') + '</div>';
+    }
+
+    return '<section class="card bloco-card">' +
+      '<div class="bloco-header"><h2>' + escapeHtml(titulo) + '</h2><span class="bloco-total">' + total + ' processo(s)</span></div>' +
+      '<div class="chips">' + (chips || '<p class="muted">Nenhuma categoria encontrada.</p>') + '</div>' +
+      resultadosHtml +
+      '<a class="ver-todos" href="#/lista/' + bloco + '//">Ver todos →</a>' +
+      '</section>';
+  }
+
+  // ---------- Tela: Listagem por categoria ----------
+
+  async function renderLista(bloco, campo, valor) {
+    campo = campo || null;
+    valor = valor || null;
+    setApp('<div class="loading">Carregando…</div>');
+    try {
+      var items = await gs('listarPorCategoria', bloco, campo, valor);
+      var titulo = bloco === 'merito' ? 'Decisões de Mérito' : 'Decisões Interlocutórias';
+      var subtitulo = campo ? campoRotulo(campo) : (valor || 'Todas as categorias');
+      var html = '<a class="voltar" href="#/inicio">← Início</a>';
+      html += '<h1>' + escapeHtml(titulo) + '</h1>';
+      html += '<p class="subtitle">' + escapeHtml(subtitulo) + ' · ' + items.length + ' processo(s)</p>';
+      html += renderTabela(items, bloco);
+      setApp(html);
+    } catch (err) {
+      setApp(erroHtml(err));
+    }
+  }
+
+  function renderTabela(items, bloco) {
+    if (!items.length) return '<p class="muted">Nenhum processo encontrado.</p>';
+    var tipo = bloco === 'merito' ? 'merito' : 'interlocutoria';
+    var linhas = items.map(function (it) {
+      var extra = bloco === 'merito' ? (it.resultado || '—') : (it.movimentoUltimaDecisao || '—');
+      var data = it.dataJulgamento || it.dataUltimaDecisao || '';
+      return '<tr>' +
+        '<td><a href="#/decisao/' + encodeURIComponent(it.id) + '/' + tipo + '">' + escapeHtml(it.processo || it.id) + '</a></td>' +
+        '<td>' + escapeHtml(it.municipio || '') + '</td>' +
+        '<td>' + escapeHtml(it.autor || '') + '</td>' +
+        '<td>' + escapeHtml(extra) + '</td>' +
+        '<td>' + escapeHtml(data) + '</td>' +
+        '</tr>';
+    }).join('');
+    var colunaExtra = bloco === 'merito' ? 'Resultado' : 'Movimento';
+    return '<table class="tabela"><thead><tr>' +
+      '<th>Processo</th><th>Município</th><th>Autor</th><th>' + colunaExtra + '</th><th>Data</th>' +
+      '</tr></thead><tbody>' + linhas + '</tbody></table>';
+  }
+
+  // ---------- Tela: Decisão ----------
+
+  async function renderDecisao(id, tipo) {
+    setApp('<div class="loading">Carregando decisão…</div>');
+    try {
+      var dados = await gs('obterDecisao', id, tipo);
+      var r = dados.resumo;
+      var html = '<a class="voltar" href="javascript:history.back()">← Voltar</a>';
+      html += '<h1>' + escapeHtml(r.processo || ('Processo ' + r.id)) + '</h1>';
+      html += '<div class="meta-grid">' +
+        metaItem('Município', r.municipio) + metaItem('Zona Eleitoral', r.zonaEleitoral) +
+        metaItem('Autor', r.autor) + metaItem('Cargo', r.cargo) +
+        metaItem('Eleição', r.eleicao) + metaItem('Resultado', r.resultado) +
+        metaItem('Data julgamento', r.dataJulgamento) + metaItem('Última decisão', r.dataUltimaDecisao) +
+        '</div>';
+      html += '<div class="decisao-box">' + (dados.html || '<p class="muted">Sem conteúdo disponível.</p>') + '</div>';
+      setApp(html);
+    } catch (err) {
+      setApp(erroHtml(err));
+    }
+  }
+
+  function metaItem(label, value) {
+    return '<div class="meta-item"><span class="meta-label">' + escapeHtml(label) + '</span>' +
+      '<span class="meta-value">' + escapeHtml(value !== null && value !== undefined ? String(value) : '—') + '</span></div>';
+  }
+
+  // ---------- Tela: Busca ----------
+
+  function renderBusca() {
+    var html = '<h1>Busca textual</h1>' +
+      '<form id="form-busca" class="form-inline">' +
+      '<input type="text" id="busca-query" placeholder="Ex.: nome do candidato, município, fundamento..." required>' +
+      '<select id="busca-bloco">' +
+      '<option value="todos">Todos os blocos</option>' +
+      '<option value="merito">Mérito</option>' +
+      '<option value="interlocutorias">Interlocutórias</option>' +
+      '</select>' +
+      '<button type="submit">Buscar</button>' +
+      '</form>' +
+      '<div id="busca-resultados"></div>';
+    setApp(html);
+
+    document.getElementById('form-busca').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var query = document.getElementById('busca-query').value;
+      var bloco = document.getElementById('busca-bloco').value;
+      var container = document.getElementById('busca-resultados');
+      container.innerHTML = '<div class="loading">Buscando…</div>';
+      try {
+        var itens = await gs('buscar', query, bloco);
+        container.innerHTML = itens.length ? renderTabelaBusca(itens) : '<p class="muted">Nenhum resultado encontrado.</p>';
+      } catch (err) {
+        container.innerHTML = erroHtml(err);
+      }
+    });
+  }
+
+  function renderTabelaBusca(itens) {
+    var linhas = itens.map(function (it) {
+      var links = [];
+      if (it.temMerito) links.push('<a href="#/decisao/' + encodeURIComponent(it.id) + '/merito">Mérito</a>');
+      if (it.temInterlocutoria) links.push('<a href="#/decisao/' + encodeURIComponent(it.id) + '/interlocutoria">Interlocutória</a>');
+      return '<tr>' +
+        '<td>' + escapeHtml(it.processo || it.id) + '</td>' +
+        '<td>' + escapeHtml(it.municipio || '') + '</td>' +
+        '<td>' + escapeHtml((it.objeto || '').slice(0, 140)) + '</td>' +
+        '<td>' + links.join(' · ') + '</td>' +
+        '</tr>';
+    }).join('');
+    return '<table class="tabela"><thead><tr><th>Processo</th><th>Município</th><th>Objeto</th><th>Ver</th></tr></thead><tbody>' + linhas + '</tbody></table>';
+  }
+
+  // ---------- Tela: Verificar Similaridade ----------
+
+  function renderSimilaridade() {
+    var html = '<h1>Verificar similaridade de peça</h1>' +
+      '<p class="subtitle">Envie um PDF (petição, recurso, defesa etc.) para localizar julgados semelhantes na base, usando IA (Gemini).</p>' +
+      '<form id="form-similaridade" class="form-stack">' +
+      '<input type="file" id="sim-arquivo" accept="application/pdf" required>' +
+      '<select id="sim-bloco">' +
+      '<option value="todos">Todos os blocos</option>' +
+      '<option value="merito">Mérito</option>' +
+      '<option value="interlocutorias">Interlocutórias</option>' +
+      '</select>' +
+      '<button type="submit">Analisar e comparar</button>' +
+      '</form>' +
+      '<div id="sim-resultados"></div>';
+    setApp(html);
+
+    document.getElementById('form-similaridade').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var fileInput = document.getElementById('sim-arquivo');
+      var bloco = document.getElementById('sim-bloco').value;
+      var container = document.getElementById('sim-resultados');
+      var file = fileInput.files[0];
+      if (!file) return;
+      if (file.type !== 'application/pdf') {
+        container.innerHTML = '<div class="erro">Envie um arquivo PDF.</div>';
+        return;
+      }
+      container.innerHTML = '<div class="loading">Lendo o PDF e comparando com a base (pode levar até 1 minuto)…</div>';
+      try {
+        var base64 = await fileToBase64(file);
+        var resp = await gs('verificarSimilaridade', base64, bloco, 10);
+        container.innerHTML = renderResultadosSimilaridade(resp);
+      } catch (err) {
+        container.innerHTML = erroHtml(err);
+      }
+    });
+  }
+
+  function renderResultadosSimilaridade(resp) {
+    if (!resp.resultados.length) {
+      return '<p class="muted">Nenhum resultado. Gere os embeddings da base em Configurações antes de usar esta ferramenta.</p>';
+    }
+    var lista = resp.resultados.map(function (r) {
+      var pct = (r.score * 100).toFixed(1) + '%';
+      var tipo = r.tipo === 'merito' ? 'merito' : 'interlocutoria';
+      return '<li class="sim-item">' +
+        '<div class="sim-score">' + pct + '</div>' +
+        '<div class="sim-info">' +
+        '<a href="#/decisao/' + encodeURIComponent(r.resumo.id) + '/' + tipo + '">' + escapeHtml(r.resumo.processo || r.resumo.id) + '</a>' +
+        '<div class="muted">' + escapeHtml(r.resumo.municipio || '') + ' · ' + (r.tipo === 'merito' ? 'Mérito' : 'Interlocutória') + '</div>' +
+        '</div></li>';
+    }).join('');
+    return '<h2>Julgados mais semelhantes</h2><ul class="sim-lista">' + lista + '</ul>' +
+      '<details class="preview-extraido"><summary>Texto extraído da peça (prévia)</summary><pre>' +
+      escapeHtml(resp.textoExtraidoPreview) + '</pre></details>';
+  }
+
+  // ---------- Tela: Configurações ----------
+
+  async function renderConfig() {
+    setApp('<div class="loading">Carregando configurações…</div>');
+    try {
+      var status = await gs('obterStatusConfiguracao');
+      var html = '<h1>Configurações</h1>';
+
+      html += '<section class="card">' +
+        '<h2>Chave da API do Gemini</h2>' +
+        '<p class="muted">Status: ' + (status.possuiChaveApi ? '<span class="ok">configurada</span>' : '<span class="atencao">não configurada</span>') + '</p>' +
+        '<form id="form-chave" class="form-inline">' +
+        '<input type="password" id="chave-api" placeholder="Cole a chave da API do Gemini" required>' +
+        '<button type="submit">Salvar</button>' +
+        '</form>' +
+        '<div id="chave-msg"></div>' +
+        '</section>';
+
+      html += '<section class="card">' +
+        '<h2>Dados da base (Metabase)</h2>' +
+        '<p class="muted">Última atualização: ' + (status.ultimaAtualizacao ? formatarData(status.ultimaAtualizacao) : 'nunca') + '</p>' +
+        '<p class="muted">O link do Metabase é interno à rede do TRE-SC — os servidores do Google não conseguem acessá-lo diretamente. ' +
+        'Abra o link do Metabase no seu navegador, baixe o resultado como JSON e envie o arquivo aqui.</p>' +
+        '<div class="form-stack">' +
+        '<input type="file" id="dados-arquivo" accept="application/json,.json">' +
+        '<button id="btn-importar-dados">Importar arquivo</button>' +
+        '</div>' +
+        '<div id="dados-msg"></div>' +
+        '</section>';
+
+      html += '<section class="card">' +
+        '<h2>Embeddings para verificação de similaridade</h2>' +
+        '<p class="muted">Registros indexados: ' + status.totalEmbeddings + '</p>' +
+        '<button id="btn-gerar-embeddings">Gerar mais um lote</button>' +
+        '<div id="emb-msg"></div>' +
+        '</section>';
+
+      setApp(html);
+
+      document.getElementById('form-chave').addEventListener('submit', async function (e) {
+        e.preventDefault();
+        var msg = document.getElementById('chave-msg');
+        msg.textContent = 'Salvando…';
+        try {
+          await gs('salvarChaveApi', document.getElementById('chave-api').value);
+          document.getElementById('chave-api').value = '';
+          msg.innerHTML = '<span class="ok">Chave salva com sucesso.</span>';
+        } catch (err) {
+          msg.innerHTML = erroHtml(err);
+        }
+      });
+
+      document.getElementById('btn-importar-dados').addEventListener('click', async function () {
+        var fileInput = document.getElementById('dados-arquivo');
+        var file = fileInput.files[0];
+        var msg = document.getElementById('dados-msg');
+        if (!file) {
+          msg.innerHTML = '<div class="erro">Selecione o arquivo JSON exportado do Metabase.</div>';
+          return;
+        }
+        try {
+          await importarArquivoDados(file, msg);
+        } catch (err) {
+          msg.innerHTML = erroHtml(err);
+        }
+      });
+
+      document.getElementById('btn-gerar-embeddings').addEventListener('click', async function () {
+        var msg = document.getElementById('emb-msg');
+        msg.textContent = 'Gerando lote (pode levar alguns minutos)…';
+        try {
+          var res = await gs('gerarLoteEmbeddings', 20);
+          msg.innerHTML = '<span class="ok">' + res.processadosAgora + ' processado(s) agora. Restam ' +
+            res.restantes + '. Total indexado: ' + res.totalArmazenado + '.</span>' +
+            (res.restantes > 0 ? ' <em>Clique novamente para continuar.</em>' : '');
+        } catch (err) {
+          msg.innerHTML = erroHtml(err);
+        }
+      });
+    } catch (err) {
+      setApp(erroHtml(err));
+    }
+  }
+</script>

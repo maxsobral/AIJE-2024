@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="#/inicio" class="brand">AIJE · TRE-SC</a>
+      <nav>
+        <a href="#/inicio">Início</a>
+        <a href="#/lista/interlocutorias//">Interlocutórias</a>
+        <a href="#/lista/merito//">Mérito</a>
+        <a href="#/busca">Busca</a>
+        <a href="#/similaridade">Verificar Similaridade</a>
+        <a href="#/config">Configurações</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="app" class="container">
+    <div class="loading">Carregando…</div>
+  </main>
+
+  <footer class="footer">
+    Consulta interna de decisões de Ações de Investigação Judicial Eleitoral (AIJE) — dados do TRE-SC.
+  </footer>
+
+  <?!= include('Script'); ?>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Segredos - nunca versionar (contém a chave da API do Gemini)
+webapp/data/config.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Ferramentas locais / editor
+.claude/
+.vscode/
+
+# Export avulso do Metabase feito manualmente, não faz parte do app
+query_result_*.json

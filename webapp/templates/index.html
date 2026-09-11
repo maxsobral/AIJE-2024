@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Consulta de Decisões AIJE - TRE-SC</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="#/inicio" class="brand">AIJE · TRE-SC</a>
+      <nav>
+        <a href="#/inicio">Início</a>
+        <a href="#/lista/interlocutorias//">Interlocutórias</a>
+        <a href="#/lista/merito//">Mérito</a>
+        <a href="#/similaridade">Verificar Similaridade</a>
+        <a href="#/config">Configurações</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="app" class="container">
+    <div class="loading">Carregando…</div>
+  </main>
+
+  <footer class="footer">
+    Consulta interna de decisões de Ações de Investigação Judicial Eleitoral (AIJE) — dados do TRE-SC.
+  </footer>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
