@@ -11,3 +11,6 @@ __pycache__/
 
 # Export avulso do Metabase feito manualmente, não faz parte do app
 query_result_*.json
+
+# Log da tarefa agendada de atualização diária
+scripts/atualizar_base.log
