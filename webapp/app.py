@@ -8,6 +8,7 @@ Rodar:
 Depois abra http://127.0.0.1:5000 no navegador.
 """
 import os
+import threading
 
 import truststore
 # Usa o repositório de certificados do próprio SO (Windows) em vez do bundle
@@ -23,11 +24,11 @@ import gemini_client
 app = Flask(__name__)
 
 
-def _deve_iniciar_indexacao_automatica():
-    """Evita iniciar a thread em dobro: quando rodado via `python app.py`
+def _deve_iniciar_tarefas_background():
+    """Evita iniciar as threads em dobro: quando rodado via `python app.py`
     (debug=True, mais abaixo), o Werkzeug reinicia o processo com um
     reloader — o processo "pai" reexecuta este arquivo só para lançar o
-    filho, sem WERKZEUG_RUN_MAIN definido, e não deve iniciar a thread.
+    filho, sem WERKZEUG_RUN_MAIN definido, e não deve iniciar nada.
     Sob gunicorn (produção) __name__ não é "__main__", roda uma vez por
     worker normalmente."""
     if __name__ != "__main__":
@@ -35,10 +36,13 @@ def _deve_iniciar_indexacao_automatica():
     return os.environ.get("WERKZEUG_RUN_MAIN") == "true"
 
 
-# Dispara a indexação de embeddings pendentes em segundo plano, sem exigir
-# clique nenhum — ver gemini_client.iniciar_indexacao_background.
-if _deve_iniciar_indexacao_automatica():
+# Dispara em segundo plano, sem exigir clique nenhum: a indexação de
+# embeddings pendentes (gemini_client.iniciar_indexacao_background) e o
+# aquecimento do cache de texto de busca (data_layer.aquecer_cache_busca,
+# senão a primeira busca depois do servidor subir ainda seria lenta).
+if _deve_iniciar_tarefas_background():
     gemini_client.iniciar_indexacao_background()
+    threading.Thread(target=data_layer.aquecer_cache_busca, daemon=True).start()
 
 
 def erro_json(e, status=400):

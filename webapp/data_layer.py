@@ -153,12 +153,16 @@ def carregar_dataset(force_reload=False):
             '"Atualizar dados agora".'
         )
     _dataset_cache = dataset
+    # Texto normalizado da busca é derivado do dataset — some ele ao carregar
+    # dados novos, senão um registro alterado ficaria com o texto antigo.
+    _texto_busca_cache.clear()
     return dataset
 
 
 def invalidar_cache_memoria():
     global _dataset_cache
     _dataset_cache = None
+    _texto_busca_cache.clear()
 
 
 # ---------- Texto / classificação ----------
@@ -323,13 +327,37 @@ def _normalizar_texto(s):
     return "".join(c for c in nfd if not unicodedata.combining(c))
 
 
+_texto_busca_cache = {}
+
+
 def _texto_combinado(r):
+    """Memoizado por ID: limpar HTML e normalizar o teor de sentença/decisão de
+    todos os processos a cada busca era o gargalo real da aplicação (~4s por
+    busca), não o JavaScript — aqui o custo só é pago uma vez por processo."""
+    chave = r.get("ID")
+    cache = _texto_busca_cache.get(chave)
+    if cache is not None:
+        return cache
     partes = [
         r.get("Objeto"), r.get("Autor (investigante)"), r.get("Municipio"),
         r.get("Zona Eleitoral"), r.get("Processo"),
         strip_html(r.get("Teor sentenca (HTML)")), strip_html(r.get("Teor ultima decisao (HTML)")),
     ]
-    return _normalizar_texto(" \n ".join(p for p in partes if p))
+    texto = _normalizar_texto(" \n ".join(p for p in partes if p))
+    _texto_busca_cache[chave] = texto
+    return texto
+
+
+def aquecer_cache_busca():
+    """Pré-computa o texto normalizado de busca de todos os processos, para
+    que a primeira busca depois do servidor subir já seja rápida (chamado em
+    background thread a partir de app.py)."""
+    try:
+        dataset = carregar_dataset()
+    except RuntimeError:
+        return
+    for r in dataset:
+        _texto_combinado(r)
 
 
 def filtrar_dataset_por_query(dataset, query):
