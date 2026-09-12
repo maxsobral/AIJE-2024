@@ -14,7 +14,7 @@ import requests
 
 METABASE_URL = (
     "https://metabasepje.tre-sc.gov.br/public/question/"
-    "529fc0b8-0e8a-4b82-a751-dafdab59f297.json"
+    "cdee7e27-5c61-4a5f-8d0b-806cd4a0af58.json"
 )
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
