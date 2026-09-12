@@ -244,6 +244,51 @@ button:hover { background: #0d4b79; }
 .preview-extraido { margin-top: 16px; }
 .preview-extraido pre { white-space: pre-wrap; background: #fff; border: 1px solid var(--azul-borda); padding: 12px; border-radius: 8px; font-size: 13px; }
 
+.banner-indexacao {
+  background: var(--azul-claro);
+  border-bottom: 1px solid var(--azul-borda);
+  color: var(--azul);
+  font-size: 13px;
+  padding: 8px 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.banner-indexacao .barra {
+  width: 140px;
+  height: 6px;
+  background: #fff;
+  border: 1px solid var(--azul-borda);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.banner-indexacao .barra-preenchida {
+  height: 100%;
+  background: var(--azul);
+}
+
+.progresso-indexacao {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+}
+.progresso-indexacao .barra {
+  flex: 1;
+  max-width: 260px;
+  height: 8px;
+  background: var(--azul-claro);
+  border: 1px solid var(--azul-borda);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progresso-indexacao .barra-preenchida {
+  height: 100%;
+  background: var(--azul);
+}
+
 .footer {
   text-align: center;
   color: var(--muted);

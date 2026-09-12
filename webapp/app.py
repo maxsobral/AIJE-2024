@@ -7,6 +7,8 @@ Rodar:
 
 Depois abra http://127.0.0.1:5000 no navegador.
 """
+import os
+
 import truststore
 # Usa o repositório de certificados do próprio SO (Windows) em vez do bundle
 # padrão do Python, para confiar na CA interna do TRE-SC (mesma que o
@@ -19,6 +21,24 @@ import data_layer
 import gemini_client
 
 app = Flask(__name__)
+
+
+def _deve_iniciar_indexacao_automatica():
+    """Evita iniciar a thread em dobro: quando rodado via `python app.py`
+    (debug=True, mais abaixo), o Werkzeug reinicia o processo com um
+    reloader — o processo "pai" reexecuta este arquivo só para lançar o
+    filho, sem WERKZEUG_RUN_MAIN definido, e não deve iniciar a thread.
+    Sob gunicorn (produção) __name__ não é "__main__", roda uma vez por
+    worker normalmente."""
+    if __name__ != "__main__":
+        return True
+    return os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+
+
+# Dispara a indexação de embeddings pendentes em segundo plano, sem exigir
+# clique nenhum — ver gemini_client.iniciar_indexacao_background.
+if _deve_iniciar_indexacao_automatica():
+    gemini_client.iniciar_indexacao_background()
 
 
 def erro_json(e, status=400):
@@ -36,6 +56,7 @@ def api_status():
         "possuiChaveApi": data_layer.has_api_key(),
         "ultimaAtualizacao": data_layer.get_last_refresh(),
         "totalEmbeddings": gemini_client.total_embeddings(),
+        "indexacao": gemini_client.status_indexacao(),
     })
 
 
@@ -54,6 +75,7 @@ def api_atualizar_dados():
     try:
         res = data_layer.atualizar_dados()
         data_layer.invalidar_cache_memoria()
+        gemini_client.iniciar_indexacao_background()
         return jsonify(res)
     except Exception as e:  # noqa: BLE001
         return erro_json(e, 502)
@@ -99,12 +121,14 @@ def api_busca():
         return erro_json(e)
 
 
-@app.route("/api/embeddings/lote", methods=["POST"])
-def api_gerar_lote_embeddings():
-    body = request.get_json(force=True, silent=True) or {}
-    tamanho = int(body.get("tamanho") or 25)
+@app.route("/api/embeddings/iniciar", methods=["POST"])
+def api_iniciar_indexacao():
+    """Força uma nova rodada de indexação em segundo plano (fallback manual
+    para quando o usuário quer confirmar que o processo automático não
+    travou); não bloqueia esperando terminar."""
     try:
-        return jsonify(gemini_client.gerar_lote_embeddings(tamanho))
+        gemini_client.iniciar_indexacao_background()
+        return jsonify(gemini_client.status_indexacao())
     except Exception as e:  # noqa: BLE001
         return erro_json(e, 502)
 

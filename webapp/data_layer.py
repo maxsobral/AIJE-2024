@@ -63,9 +63,14 @@ def _read_json(path, default=None):
 
 
 def _write_json(path, obj):
+    """Escreve em arquivo temporário e substitui com os.replace (atômico), para
+    não corromper o arquivo se dois processos (ex.: workers do gunicorn)
+    gravarem por perto um do outro."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    tmp_path = f"{path}.tmp{os.getpid()}"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False)
+    os.replace(tmp_path, path)
 
 
 # ---------- Configuração (chave da API, metadados) ----------

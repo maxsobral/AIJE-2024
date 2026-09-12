@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import threading
 import time
 from urllib.parse import quote
 
@@ -16,10 +17,12 @@ import requests
 
 from data_layer import (
     CACHE_PATH,
+    DATA_DIR,
     EMBEDDINGS_PATH,
     classificar_registro,
     carregar_dataset,
     get_api_key,
+    has_api_key,
     resumo_processo,
     strip_html,
     _read_json,
@@ -29,6 +32,26 @@ from data_layer import (
 GEMINI_MODEL_GENERATIVO = "gemini-3.8-flash"
 GEMINI_MODEL_EMBEDDING = "gemini-embedding-001"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
+
+# ---------- Indexação automática em segundo plano ----------
+#
+# Em vez de depender de alguém ficar clicando em "Gerar mais um lote", um
+# thread em segundo plano vai gerando os embeddings pendentes sozinho, aos
+# poucos, sempre que houver processos novos (após "Atualizar dados agora" ou
+# ao iniciar o servidor). O progresso fica disponível via status_indexacao(),
+# consultado pelo front-end para mostrar o aviso de "base em atualização".
+
+LOTE_BACKGROUND = 8
+PAUSA_ENTRE_LOTES_SEG = 3
+MAX_TENTATIVAS_POR_ITEM = 3
+
+# Lock em arquivo (não só em memória) porque em produção o gunicorn roda mais
+# de um worker (processos separados) e só um deles deve indexar por vez.
+_LOCK_PATH = os.path.join(DATA_DIR, "indexacao.lock")
+_LOCK_STALE_SEG = 30 * 60
+
+_thread_lock = threading.Lock()
+_thread_ativa = False
 
 
 def _encode_proxy_url(raw):
@@ -128,45 +151,156 @@ def similaridade_cosseno(a, b):
     return dot / (na * nb)
 
 
-def gerar_lote_embeddings(tamanho_lote=25):
-    dataset = carregar_dataset()
-    store = _read_json(EMBEDDINGS_PATH, {}) or {}
-
-    pendentes = []
+def _chaves_necessarias(dataset):
+    """Toda chave (id_tipo) que deveria ter um embedding, com o texto de origem."""
     for r in dataset:
         cls = classificar_registro(r)
         id_ = str(r.get("ID"))
         if cls["temMerito"]:
-            chave = f"{id_}_merito"
-            if chave not in store or store[chave].get("error"):
-                pendentes.append((chave, id_, "merito", strip_html(r.get("Teor sentenca (HTML)"))))
+            yield f"{id_}_merito", id_, "merito", strip_html(r.get("Teor sentenca (HTML)"))
         if cls["temInterlocutoria"]:
-            chave = f"{id_}_interlocutoria"
-            if chave not in store or store[chave].get("error"):
-                pendentes.append((chave, id_, "interlocutoria", strip_html(r.get("Teor ultima decisao (HTML)"))))
+            yield f"{id_}_interlocutoria", id_, "interlocutoria", strip_html(r.get("Teor ultima decisao (HTML)"))
 
-    lote = pendentes[:tamanho_lote]
+
+def _pendentes(dataset, store):
+    """Chaves sem embedding ainda, ou com erro e menos de MAX_TENTATIVAS_POR_ITEM
+    tentativas (evita martelar a API indefinidamente num item permanentemente
+    problemático)."""
+    pendentes = []
+    for chave, id_, tipo, texto in _chaves_necessarias(dataset):
+        entrada = store.get(chave)
+        if entrada is None:
+            pendentes.append((chave, id_, tipo, texto))
+        elif entrada.get("error") and entrada.get("tentativas", 1) < MAX_TENTATIVAS_POR_ITEM:
+            pendentes.append((chave, id_, tipo, texto))
+    return pendentes
+
+
+def _processar_lote(pendentes, store):
     processados = 0
-    for chave, id_, tipo, texto in lote:
+    for chave, id_, tipo, texto in pendentes:
         try:
             vetor = gerar_embedding(truncar_para_embedding(texto))
             store[chave] = {"id": id_, "tipo": tipo, "vector": vetor}
             processados += 1
-        except Exception as e:  # noqa: BLE001 - queremos registrar e seguir para o próximo
-            store[chave] = {"id": id_, "tipo": tipo, "error": str(e)}
+        except Exception as e:  # noqa: BLE001 - registra e segue para o próximo
+            tentativas = (store.get(chave) or {}).get("tentativas", 0) + 1
+            store[chave] = {"id": id_, "tipo": tipo, "error": str(e), "tentativas": tentativas}
+    return processados
 
+
+def gerar_lote_embeddings(tamanho_lote=25):
+    """Gera um lote sob demanda (mantido para uso manual/depuração). O fluxo
+    normal é a indexação em segundo plano, ver iniciar_indexacao_background."""
+    dataset = carregar_dataset()
+    store = _read_json(EMBEDDINGS_PATH, {}) or {}
+    pendentes = _pendentes(dataset, store)
+    lote = pendentes[:tamanho_lote]
+    processados = _processar_lote(lote, store)
     _write_json(EMBEDDINGS_PATH, store)
     return {
         "processadosAgora": processados,
         "restantes": len(pendentes) - processados,
         "totalPendenteAntes": len(pendentes),
-        "totalArmazenado": len(store),
+        "totalArmazenado": total_embeddings(),
     }
 
 
 def total_embeddings():
     store = _read_json(EMBEDDINGS_PATH, {}) or {}
     return sum(1 for v in store.values() if v.get("vector"))
+
+
+def status_indexacao():
+    """Progresso da indexação para exibir ao usuário final (ver /api/status)."""
+    try:
+        dataset = carregar_dataset()
+    except RuntimeError:
+        return {"totalNecessario": 0, "totalIndexado": 0, "restantes": 0, "percentual": 100, "emAndamento": False}
+    store = _read_json(EMBEDDINGS_PATH, {}) or {}
+    total_necessario = sum(1 for _ in _chaves_necessarias(dataset))
+    indexados = sum(1 for v in store.values() if v.get("vector"))
+    restantes = len(_pendentes(dataset, store))
+    percentual = 100 if total_necessario == 0 else round(indexados * 100 / total_necessario)
+    return {
+        "totalNecessario": total_necessario,
+        "totalIndexado": indexados,
+        "restantes": restantes,
+        "percentual": percentual,
+        "emAndamento": _thread_ativa or _lock_ativo(),
+    }
+
+
+def _lock_ativo():
+    """Indica indexação em andamento neste processo ou em outro worker (o
+    lock é em arquivo justamente para ser visível entre processos)."""
+    try:
+        idade = time.time() - os.path.getmtime(_LOCK_PATH)
+    except OSError:
+        return False
+    return idade <= _LOCK_STALE_SEG
+
+
+def _adquirir_lock_indexacao():
+    try:
+        fd = os.open(_LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        try:
+            idade = time.time() - os.path.getmtime(_LOCK_PATH)
+        except OSError:
+            return False
+        if idade > _LOCK_STALE_SEG:
+            # Lock órfão (processo anterior morreu sem liberar) — assume e segue.
+            try:
+                os.remove(_LOCK_PATH)
+            except OSError:
+                pass
+        return False
+
+
+def _liberar_lock_indexacao():
+    try:
+        os.remove(_LOCK_PATH)
+    except OSError:
+        pass
+
+
+def _loop_indexacao_background():
+    global _thread_ativa
+    try:
+        try:
+            dataset = carregar_dataset(force_reload=True)
+        except RuntimeError:
+            return
+        while True:
+            store = _read_json(EMBEDDINGS_PATH, {}) or {}
+            pendentes = _pendentes(dataset, store)
+            if not pendentes:
+                break
+            _processar_lote(pendentes[:LOTE_BACKGROUND], store)
+            _write_json(EMBEDDINGS_PATH, store)
+            time.sleep(PAUSA_ENTRE_LOTES_SEG)
+    finally:
+        _thread_ativa = False
+        _liberar_lock_indexacao()
+
+
+def iniciar_indexacao_background():
+    """Dispara (se ainda não estiver rodando) o preenchimento gradual dos
+    embeddings pendentes, sem exigir clique nenhum. Chamado ao iniciar o
+    servidor e depois de cada atualização de dados bem-sucedida."""
+    global _thread_ativa
+    with _thread_lock:
+        if _thread_ativa or not has_api_key():
+            return False
+        if not _adquirir_lock_indexacao():
+            return False
+        _thread_ativa = True
+        threading.Thread(target=_loop_indexacao_background, daemon=True).start()
+        return True
 
 
 def _extrair_json(texto):

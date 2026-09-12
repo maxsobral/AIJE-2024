@@ -34,7 +34,7 @@ const api = {
   busca: (q, bloco) => getJSON('/api/busca?' + new URLSearchParams({ q: q, bloco: bloco })),
   salvarChave: (chave) => postJSON('/api/config/chave', { chave: chave }),
   atualizarDados: () => postJSON('/api/dados/atualizar'),
-  gerarLoteEmbeddings: (tamanho) => postJSON('/api/embeddings/lote', { tamanho: tamanho }),
+  iniciarIndexacao: () => postJSON('/api/embeddings/iniciar'),
   similaridade: (file, bloco) => {
     var fd = new FormData();
     fd.append('arquivo', file);
@@ -100,6 +100,42 @@ function router() {
 
 window.addEventListener('hashchange', router);
 window.addEventListener('DOMContentLoaded', router);
+window.addEventListener('DOMContentLoaded', iniciarBannerIndexacao);
+
+// ---------- Aviso global: indexação de embeddings em segundo plano ----------
+//
+// A base de julgados usada na verificação de similaridade é indexada aos
+// poucos, sozinha, em segundo plano (ver webapp/gemini_client.py). Este
+// aviso avisa o usuário final que a base ainda não está 100% pronta, sem
+// exigir nenhuma ação dele.
+
+function iniciarBannerIndexacao() {
+  atualizarBannerIndexacao();
+  setInterval(atualizarBannerIndexacao, 20000);
+}
+
+async function atualizarBannerIndexacao() {
+  var banner = document.getElementById('banner-indexacao');
+  if (!banner) return;
+  try {
+    var status = await api.status();
+    renderBannerIndexacao(banner, status.indexacao);
+  } catch (err) {
+    // Silencioso: o aviso é informativo, não deve incomodar se a rede falhar.
+  }
+}
+
+function renderBannerIndexacao(banner, indexacao) {
+  if (!indexacao || indexacao.totalNecessario === 0 || indexacao.percentual >= 100) {
+    banner.style.display = 'none';
+    banner.innerHTML = '';
+    return;
+  }
+  banner.style.display = '';
+  banner.innerHTML =
+    '<span>Base de julgados para verificação de similaridade em atualização: ' + indexacao.percentual + '%</span>' +
+    '<span class="barra"><span class="barra-preenchida" style="width:' + indexacao.percentual + '%"></span></span>';
+}
 
 // ---------- Tela: Início ----------
 
@@ -519,10 +555,16 @@ async function renderConfig() {
       '<div id="dados-msg"></div>' +
       '</section>';
 
+    var idx = status.indexacao || {};
     html += '<section class="card">' +
       '<h2>Embeddings para verificação de similaridade</h2>' +
-      '<p class="muted">Registros indexados: ' + status.totalEmbeddings + '</p>' +
-      '<button id="btn-gerar-embeddings">Gerar mais um lote</button>' +
+      '<p class="muted">Roda sozinha em segundo plano (sem precisar clicar) sempre que houver ' +
+      'processos novos na base. Indexados: ' + idx.totalIndexado + ' de ' + idx.totalNecessario +
+      (idx.emAndamento ? ' — <span class="ok">em andamento…</span>' : (idx.restantes > 0 ? ' — <span class="atencao">parada, com pendências</span>' : ' — <span class="ok">completo</span>')) +
+      '</p>' +
+      '<div class="progresso-indexacao"><span class="barra"><span class="barra-preenchida" style="width:' + (idx.percentual || 0) + '%"></span></span>' +
+      '<span>' + (idx.percentual || 0) + '%</span></div>' +
+      '<button id="btn-forcar-indexacao">Forçar verificação agora</button>' +
       '<div id="emb-msg"></div>' +
       '</section>';
 
@@ -552,14 +594,12 @@ async function renderConfig() {
       }
     });
 
-    document.getElementById('btn-gerar-embeddings').addEventListener('click', async function () {
+    document.getElementById('btn-forcar-indexacao').addEventListener('click', async function () {
       var msg = document.getElementById('emb-msg');
-      msg.textContent = 'Gerando lote (pode levar alguns minutos)…';
+      msg.textContent = 'Iniciando…';
       try {
-        var res = await api.gerarLoteEmbeddings(25);
-        msg.innerHTML = '<span class="ok">' + res.processadosAgora + ' processado(s) agora. Restam ' +
-          res.restantes + '. Total indexado: ' + res.totalArmazenado + '.</span>' +
-          (res.restantes > 0 ? ' <em>Clique novamente para continuar.</em>' : '');
+        await api.iniciarIndexacao();
+        msg.innerHTML = '<span class="ok">Indexação em segundo plano iniciada (ou já estava rodando). Atualize a página em alguns instantes para ver o progresso.</span>';
       } catch (err) {
         msg.innerHTML = erroHtml(err);
       }
